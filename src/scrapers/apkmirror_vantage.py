@@ -35,7 +35,8 @@ def pick_bundle(html: str, arch: str) -> str | None:
         "x86": ("x86",),
         "x86_64": ("x86_64",),
         "universal": ("universal", "noarch"),
-        "all": ("universal", "noarch"),
+        "all": (),
+        "both": (),
     }.get(arch, (arch,))
     rows = re.findall(r'<div class="table-row[^"]*">.*?</div>\s*</div>', html, re.S)
     for row in rows:
@@ -47,7 +48,7 @@ def pick_bundle(html: str, arch: str) -> str | None:
         if not re.search(r"\bBUNDLE\b", plain, re.I):
             continue
         low = plain.lower()
-        if not any(alias.lower() in low for alias in aliases):
+        if aliases and not any(alias.lower() in low for alias in aliases):
             continue
         if arch == "arm64-v8a" and "arm64-v8a" not in low:
             continue
