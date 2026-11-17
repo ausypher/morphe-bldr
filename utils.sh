@@ -2068,6 +2068,20 @@ build_rv() {
 							if ! verify_stock_apkm "$fallback_file" "$pkg_name" "$version_f" "$arch_f"; then continue; fi
 						else
 							if ! check_sig "$fallback_file" "$pkg_name"; then continue; fi
+							local fallback_aapt="" fallback_badging=""
+						if command -v aapt >/dev/null 2>&1; then fallback_aapt=$(command -v aapt)
+						elif [[ -n "${ANDROID_HOME:-}" ]]; then fallback_aapt=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt 2>/dev/null | sort -V | tail -1)
+					elif [[ -n "${ANDROID_SDK_ROOT:-}" ]]; then fallback_aapt=$(find "$ANDROID_SDK_ROOT/build-tools" -maxdepth 2 -type f -name aapt 2>/dev/null | sort -V | tail -1)
+					fi
+						if [[ -z "$fallback_aapt" || ! -x "$fallback_aapt" ]]; then
+							epr "Cannot verify alternate Twitter APK identity; skipping $fallback_source"
+							continue
+						fi
+						fallback_badging=$("$fallback_aapt" dump badging "$fallback_file" 2>/dev/null || true)
+						if ! grep -qF "name='$pkg_name'" <<<"$fallback_badging" || ! grep -qF "versionName='$version_f'" <<<"$fallback_badging"; then
+							epr "Alternate Twitter APK package/version mismatch; skipping $fallback_source"
+							continue
+						fi
 						fi
 						pr "Trying Twitter patch against alternate stock APK from $fallback_source"
 						if patch_apk "$fallback_file" "$patched_apk" "${patcher_args[*]}" "${args[cli]}" "${args[ptjar]}"; then
