@@ -1469,7 +1469,7 @@ dl_apkpure() {
 		rm -f "$output"
 		return 1
 	}
-	[[ -s "$output" ]]
+	[[ -s "$output" || -s "${output}.apkm" ]]
 }
 # -------------------- uptodown wrappers --------------------
 get_uptodown_resp() { 
