@@ -1,0 +1,36 @@
+name: Validate APK sources
+
+on:
+  pull_request:
+    paths:
+      - "utils.sh"
+      - "src/scrapers/**"
+      - "sig.txt"
+      - ".github/workflows/validate-apk-sources.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check shell syntax
+        run: |
+          bash -n build.sh
+          bash -n utils.sh
+
+      - name: Check Python syntax
+        run: |
+          python -m py_compile \
+            src/scrapers/apkmirror_vantage.py \
+            src/scrapers/apkpure_apkeep.py \
+            apkmirror_bridge.py \
+            source_bridge.py
