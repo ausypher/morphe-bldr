@@ -1918,7 +1918,15 @@ build_rv() {
 	fi
 
 	if [[ -z "$stock_file" ]]; then
-		for dl_p in "${DL_SRCS[@]}"; do
+		# Match Vantage's per-app source order; do not waste time on unrelated
+		# providers that cannot supply these split packages.
+		local stock_dl_sources=()
+		case "$pkg_name" in
+			com.twitter.android) stock_dl_sources=(apkmirror) ;;
+			com.instagram.android) stock_dl_sources=(apkpure apkmirror) ;;
+			*) stock_dl_sources=("${DL_SRCS[@]}") ;;
+		esac
+		for dl_p in "${stock_dl_sources[@]}"; do
 			if [[ "$dl_p" == "apkpure" ]]; then
 				pr "Downloading '${table}' from 'apkpure'"
 				if dl_apkpure "" "$version_f" "$stock_apk" "$arch" "${args[dpi]:-}" "${__TARGET_VERSION_CODE__:-}"; then
