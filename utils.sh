@@ -6,7 +6,7 @@ TEMP_DIR="temp"
 BIN_DIR="bin"
 BUILD_DIR="build"
 # Prioritized source list: APKMirror -> Uptodown -> GitHub -> Direct override -> Archive
-DL_SRCS=("apkmirror" "uptodown" "github" "direct" "archive")
+DL_SRCS=("apkmirror" "apkpure" "uptodown" "github" "archive" "direct")
 
 if [ "${GITHUB_TOKEN-}" ]; then GH_HEADER="Authorization: token ${GITHUB_TOKEN}"; else GH_HEADER=; fi
 NEXT_VER_CODE=${NEXT_VER_CODE:-$(date +'%Y%m%d')}
@@ -1402,69 +1402,75 @@ run_python_backend() {
 
 setup_python_backend
 
-# -------------------- github wrappers --------------------
-get_github_resp() {
-	__GITHUB_URL__="${1%/}"
-	__GITHUB_RESP__=$(run_python_backend "github_pkg" "$__GITHUB_URL__") || return 1
-}
-
-get_github_pkg_name() { 
-	local pkg=$(grep -oP '^PKG:\K.*' <<<"${__GITHUB_RESP__:-}" | head -1)
-	echo "${pkg:-UNKNOWN}"
-}
-
-get_github_vers() { 
-	run_python_backend "github_vers" "${__GITHUB_URL__:-}"
-}
-
+# -------------------- GitHub Releases (Python + curl_cffi) --------------------
+get_github_resp() { __GITHUB_JSON__=$(python3 source_bridge.py github metadata "$1") || return 1; }
+get_github_pkg_name() { jq -r '.pkg_name // empty' <<<"${__GITHUB_JSON__:-}"; }
+get_github_vers() { jq -r '.versions[]?' <<<"${__GITHUB_JSON__:-}"; }
 dl_github() {
-	local url="${1%/}" version=$2 output=$3 arch=$4 dpi=$5 vcode=${6:-}
-	rm -f "${output}" "${output}.apkm" "${output}.is_bundle" "${output}.apkm.is_bundle"
-
-	if ! run_python_backend "github_dl" "$url" "$version" "$output" "$arch" "$dpi" "$vcode" >/dev/null; then
+	local url=$1 version=$2 output=$3 arch=$4 dpi=$5 vcode=${6:-}
+	rm -f "$output" "${output}.apkm"
+	if ! python3 source_bridge.py github download "$url" "$version" "$output" "$arch" "$dpi" "$vcode"; then
+		epr "GitHub release download failed for version '$version', arch '$arch'"
 		return 1
 	fi
-	[[ -f "$output" || -f "${output}.apkm" ]]
+	if [[ -f "${output}.apkm" ]]; then
+		merge_splits "${output}.apkm" "$output" || return 1
+	elif [[ ! -s "$output" ]]; then
+		epr "GitHub release returned without an APK"
+		return 1
+	fi
+	return 0
 }
-
-# -------------------- apkmirror wrappers --------------------
+# -------------------- APKMirror (Python + curl_cffi scraper) --------------------
 get_apkmirror_resp() {
 	__APKMIRROR_URL__="${1%/}"
-	__APKMIRROR_CAT__="${__APKMIRROR_URL__##*/}"
-	__APKMIRROR_RESP__=$(run_python_backend "apkmirror_pkg" "$__APKMIRROR_URL__") || return 1
+	__APKMIRROR_JSON__=$(python3 apkmirror_bridge.py metadata "$__APKMIRROR_URL__") || return 1
+	__APKMIRROR_CAT__=$(jq -r '.category // empty' <<<"$__APKMIRROR_JSON__")
 }
-
-get_apkmirror_pkg_name() { 
-	local pkg=$(grep -oP '^PKG:\K.*' <<<"${__APKMIRROR_RESP__:-}" | head -1)
-	if [ -z "$pkg" ] || [ "$pkg" = "UNKNOWN" ]; then
+get_apkmirror_pkg_name() {
+	local pkg
+	pkg=$(jq -r '.pkg_name // empty' <<<"${__APKMIRROR_JSON__:-}")
+	if [[ -z "$pkg" || "$pkg" == "UNKNOWN" ]]; then
 		case "${__APKMIRROR_URL__,,}" in
 			*youtube-music*) pkg="com.google.android.apps.youtube.music" ;;
 			*youtube*) pkg="com.google.android.youtube" ;;
 			*photos*) pkg="com.google.android.apps.photos" ;;
 			*reddit*) pkg="com.reddit.frontpage" ;;
-			*twitter*|*x*) pkg="com.twitter.android" ;;
+			*twitter*|*x-corp*) pkg="com.twitter.android" ;;
 			*messenger*) pkg="com.facebook.orca" ;;
 			*facebook*) pkg="com.facebook.katana" ;;
 			*threads*) pkg="com.instagram.barcelona" ;;
 			*instagram*) pkg="com.instagram.android" ;;
 		esac
 	fi
-	echo "${pkg:-UNKNOWN}"
+	printf '%s\n' "${pkg:-UNKNOWN}"
 }
-
-get_apkmirror_vers() { run_python_backend "apkmirror_vers" "${__APKMIRROR_URL__:-}"; }
-
+get_apkmirror_vers() { jq -r '.versions[]?' <<<"${__APKMIRROR_JSON__:-}"; }
 dl_apkmirror() {
 	local url="${1%/}" version=$2 output=$3 arch=$4 dpi=$5 vcode=${6:-}
-	if [[ -f "${output}.apkm" || -f "${output}" ]]; then return 0; fi
-	rm -f "${output}.is_bundle" "${output}.apkm.is_bundle"
-	
-	if ! run_python_backend "apkmirror_dl" "$url" "$version" "$output" "$arch" "$dpi" "$vcode" >/dev/null; then
+	rm -f "$output" "${output}.apkm" "${output}.is_bundle" "${output}.apkm.is_bundle"
+	if ! python3 apkmirror_bridge.py download "$url" "$version" "$output" "$arch" "$dpi" "$vcode"; then
+		epr "APKMirror scraper failed for version '$version', arch '$arch', dpi '$dpi'"
 		return 1
 	fi
-	[[ -f "$output" || -f "${output}.apkm" ]]
+	[[ -s "$output" || -s "${output}.apkm" ]]
 }
 
+# -------------------- APKPure download-only fallback --------------------
+get_apkpure_resp() { return 0; }
+get_apkpure_pkg_name() { printf '%s\n' "${pkg_name:-UNKNOWN}"; }
+get_apkpure_vers() { return 1; }
+dl_apkpure() {
+	local _url=$1 version=$2 output=$3 arch=$4 _dpi=$5
+	rm -f "$output" "${output}.apkm"
+	pr "Trying APKPure fallback for $pkg_name $version ($arch)"
+	python3 src/scrapers/apkpure_download.py "$pkg_name" "$version" "$arch" "$output" || {
+		epr "APKPure download failed for $pkg_name $version ($arch)"
+		rm -f "$output"
+		return 1
+	}
+	[[ -s "$output" ]]
+}
 # -------------------- uptodown wrappers --------------------
 get_uptodown_resp() { 
 	__UPTODOWN_URL__="${1%/}"
@@ -1500,6 +1506,90 @@ dl_uptodown() {
 	fi
 	[[ -f "$output" || -f "${output}.apkm" ]]
 }
+
+# -------------------- stock APK cache (GitHub Releases) --------------------
+_cache_asset_stem() {
+  local pkg="$1" version="$2" arch="$3"
+  pkg=$(printf '%s' "$pkg" | tr -c 'A-Za-z0-9._+-' '-')
+  version=$(printf '%s' "$version" | tr -c 'A-Za-z0-9._+-' '-')
+  arch=$(printf '%s' "$arch" | tr -c 'A-Za-z0-9._+-' '-')
+  printf 'stock__%s__%s__%s' "$pkg" "$version" "$arch"
+}
+cache_download() {
+  local pkg="$1" version="$2" arch="$3" output="$4"
+  [ -n "${GITHUB_REPOSITORY-}" ] || return 1
+  command -v gh >/dev/null 2>&1 || return 1
+  local dir="${TEMP_DIR}/apk-cache" stem ext asset checksum
+  stem=$(_cache_asset_stem "$pkg" "$version" "$arch")
+  mkdir -p "$dir"
+  if gh release view stock-cache >/dev/null 2>&1; then
+    # Convert the old public cache release to a draft before reading its assets.
+    if ! gh release edit stock-cache --draft >/dev/null 2>&1; then
+      wpr "Could not hide stock-cache release; skipping cache to protect ObtainX"
+      return 1
+    fi
+  else
+    return 1
+  fi
+  for ext in apk apkm; do
+    asset="${stem}.${ext}"; checksum="${asset}.sha256"
+    rm -f "$dir/$asset" "$dir/$checksum"
+    if ! gh release download stock-cache --pattern "$asset" --pattern "$checksum" --dir "$dir" >/dev/null 2>&1; then continue; fi
+    if ! (cd "$dir" && sha256sum -c "$checksum" >/dev/null 2>&1) || ! unzip -tq "$dir/$asset" >/dev/null 2>&1; then
+      epr "Cached APK failed checksum/archive validation: $asset"
+      rm -f "$dir/$asset" "$dir/$checksum"
+      continue
+    fi
+    if [ "$ext" = apkm ]; then
+      local base_apk="${dir}/${stem}.base.apk"
+      unzip -p "$dir/$asset" base.apk > "$base_apk" 2>/dev/null || { rm -f "$base_apk"; continue; }
+      if ! check_sig "$base_apk" "$pkg" >/dev/null 2>&1; then
+        epr "Cached APKM signature mismatch: $asset"
+        rm -f "$base_apk"
+        continue
+      fi
+      rm -f "$base_apk"
+      cp -f "$dir/$asset" "${output}.apkm"
+      merge_splits "${output}.apkm" "$output" || { rm -f "${output}.apkm" "$output"; continue; }
+    else
+      cp -f "$dir/$asset" "$output"
+      if ! check_sig "$output" "$pkg" >/dev/null 2>&1; then
+        epr "Cached APK signature mismatch: $asset"
+        rm -f "$output"
+        continue
+      fi
+    fi
+    pr "Using cached stock APK: $pkg $version ($arch)"
+    return 0
+  done
+  return 1
+}
+cache_upload() {
+  local pkg="$1" version="$2" arch="$3" input="$4" source ext dir stem asset checksum
+  [ -n "${GITHUB_REPOSITORY-}" ] || return 0
+  command -v gh >/dev/null 2>&1 || { wpr "GitHub CLI unavailable; skipping APK cache upload"; return 0; }
+  source="$input"; ext=apk
+  if [ -s "${input}.apkm" ]; then source="${input}.apkm"; ext=apkm; fi
+  [ -s "$source" ] || return 0
+  if ! unzip -tq "$source" >/dev/null 2>&1; then wpr "Stock APK failed archive validation; not caching"; return 0; fi
+  dir="${TEMP_DIR}/apk-cache-upload"
+  stem=$(_cache_asset_stem "$pkg" "$version" "$arch")
+  asset="${stem}.${ext}"; checksum="${asset}.sha256"
+  mkdir -p "$dir"; cp -f "$source" "$dir/$asset"
+  (cd "$dir" && sha256sum "$asset" > "$checksum")
+  if ! gh release view stock-cache >/dev/null 2>&1; then
+    gh release create stock-cache --draft --title "Stock APK cache" --notes "Original APK cache keyed by package, version and architecture." >/dev/null || { wpr "Could not create stock-cache release"; return 0; }
+  else
+    # Keep the cache invisible to public release trackers such as ObtainX.
+    gh release edit stock-cache --draft >/dev/null || { wpr "Could not hide stock-cache release from public release feeds"; return 0; }
+  fi
+  if gh release upload stock-cache "$dir/$asset" "$dir/$checksum" --clobber >/dev/null; then
+    pr "Cached stock APK: $pkg $version ($arch)"
+  else
+    wpr "Could not upload stock APK to cache"
+  fi
+}
+# --------------------------------------------------
 
 # -------------------- archive --------------------
 dl_archive() {
@@ -1686,8 +1776,20 @@ build_rv() {
 		stock_file="${stock_apk}"
 	fi
 
+	if [[ -z "$stock_file" ]] && cache_download "$pkg_name" "$version_f" "$arch_f" "$stock_apk"; then
+		if [[ -f "${stock_apk}.apkm" ]]; then stock_file="${stock_apk}.apkm"; else stock_file="$stock_apk"; fi
+	fi
+
 	if [[ -z "$stock_file" ]]; then
 		for dl_p in "${DL_SRCS[@]}"; do
+			if [[ "$dl_p" == "apkpure" ]]; then
+				pr "Downloading '${table}' from 'apkpure'"
+				if dl_apkpure "" "$version_f" "$stock_apk" "$arch" "${args[dpi]:-}" "${__TARGET_VERSION_CODE__:-}"; then
+					if [[ -s "${stock_apk}.apkm" ]]; then stock_file="${stock_apk}.apkm"; elif [[ -s "$stock_apk" ]]; then stock_file="$stock_apk"; fi
+					[[ -n "$stock_file" ]] && break
+				fi
+				continue
+			fi
 			if [[ -z "${args[${dl_p}_dlurl]:-}" ]]; then continue; fi
 			pr "Downloading '${table}' from '${dl_p}'"
 			if ! isoneof "$dl_p" "${tried_dl[@]}"; then
@@ -1731,6 +1833,9 @@ build_rv() {
 			return 0
 		fi
 	fi
+
+	# Cache only the original APK after package-signature validation.
+	cache_upload "$pkg_name" "$version_f" "$arch_f" "$stock_apk"
 
 	# === Extract actual versionName from the fresh stock APK via AAPT2 ===
 	local aapt_bin=""

@@ -1,0 +1,3 @@
+# Python dependencies for APK source scrapers
+beautifulsoup4
+curl_cffi
