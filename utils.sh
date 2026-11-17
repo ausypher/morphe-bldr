@@ -1503,16 +1503,10 @@ dl_apkmirror() {
 	local url="${1%/}" version=$2 output=$3 arch=$4 dpi=$5 vcode=${6:-}
 	rm -f "$output" "${output}.apkm" "${output}.is_bundle" "${output}.apkm.is_bundle"
 
-	# X/Twitter is distributed as a split bundle. Select APKMirror's BUNDLE
-	# variant explicitly; downloading its single-APK row loses required splits.
-	if [[ "$pkg_name" == "com.twitter.android" ]]; then
-		if ! python3 src/scrapers/apkmirror_vantage.py "$pkg_name" "$version" "$arch" "${output}.apkm"; then
-			epr "APKMirror BUNDLE download failed for $pkg_name $version ($arch)"
-			return 1
-		fi
-		return 0
-	fi
-
+	# Use the repository's existing APKMirror scraper for X as well.
+	# Unlike the standalone curl_cffi resolver, this path reuses the Cloudflare
+	# cookie solver started by the build workflow and selects the BUNDLE row
+	# through APKMirrorScraper. Morphe receives the original APKM unchanged.
 	if ! python3 apkmirror_bridge.py download "$url" "$version" "$output" "$arch" "$dpi" "$vcode"; then
 		epr "APKMirror scraper failed for version '$version', arch '$arch', dpi '$dpi'"
 		return 1
@@ -1529,12 +1523,14 @@ dl_apkpure() {
 	local apkeep_dir="${TEMP_DIR}/tools" apkeep="$TEMP_DIR/tools/apkeep-1.1.0"
 	local apkeep_url="https://github.com/EFForg/apkeep/releases/download/1.1.0/apkeep-x86_64-unknown-linux-gnu"
 	local apkeep_sha="badd7ad9fa7d2f32abe01eaf33b7ff086361a95bbc000a33bf44b630d4bf2140"
-	local tmp xapk aapt
+	local tmp xapk aapt base abis
 
-	# APKPure's Instagram endpoint is Cloudflare-challenged. Vantage uses
-	# apkeep's apk-pure API and then verifies every split against Meta's cert.
+	# HushGram is built from the official com.instagram.android package.
+	# Follow Vantage's APKPure/apkeep flow: keep the original XAPK container;
+	# do not rebuild/rename its split APK entries. verify_stock_apkm() below
+	# verifies every split's signature and the base package/version before use.
 	if [[ "$pkg_name" != "com.instagram.android" ]]; then
-		epr "APKPure/apkeep is intentionally enabled only for Instagram"
+		epr "APKPure/apkeep is enabled only for HushGram (com.instagram.android)"
 		return 1
 	fi
 
@@ -1566,12 +1562,12 @@ dl_apkpure() {
 		aapt=$(find "$ANDROID_SDK_ROOT/build-tools" -maxdepth 2 -type f -name aapt 2>/dev/null | sort -V | tail -1)
 	fi
 	if [[ -z "$aapt" || ! -x "$aapt" ]]; then
-		epr "Android SDK aapt not found; cannot validate APKPure package/version/ABI"
+		epr "Android SDK aapt not found; cannot validate APKPure ABI"
 		return 1
 	fi
 
 	tmp=$(mktemp -d)
-	pr "Trying APKPure apkeep for $pkg_name $version ($arch)"
+	pr "Trying APKPure apkeep for HushGram stock package $version ($arch)"
 	if ! "$apkeep" -a "$pkg_name@$version" -d apk-pure -o acknowledge_dangers=true "$tmp"; then
 		epr "apkeep could not download $pkg_name@$version"
 		rm -rf "$tmp"
@@ -1584,11 +1580,22 @@ dl_apkpure() {
 		return 1
 	fi
 
-	if ! python3 src/scrapers/apkpure_apkeep.py "$pkg_name" "$version" "$arch" "$xapk" "${output}.apkm" "$aapt"; then
-		epr "APKPure XAPK validation/normalization failed"
-		rm -rf "$tmp" "${output}.apkm"
+	# Vantage identifies the base by its exact XAPK entry name ($PKG.apk),
+	# rather than guessing that base.apk is the application base.
+	base="$tmp/base-check.apk"
+	if ! unzip -p "$xapk" "$pkg_name.apk" > "$base" 2>/dev/null || [[ ! -s "$base" ]]; then
+		epr "APKPure XAPK has no $pkg_name.apk base entry"
+		rm -rf "$tmp"
 		return 1
 	fi
+	abis=$("$aapt" dump badging "$base" 2>/dev/null | grep -E '^native-code:' || true)
+	if ! grep -qF "'$arch'" <<<"$abis"; then
+		epr "APKPure base does not match ABI $arch (${abis:-no native-code line})"
+		rm -rf "$tmp"
+		return 1
+	fi
+
+	cp "$xapk" "${output}.apkm"
 	rm -rf "$tmp"
 	[[ -s "${output}.apkm" ]]
 }
