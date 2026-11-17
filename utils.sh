@@ -1402,31 +1402,25 @@ run_python_backend() {
 
 setup_python_backend
 
-# -------------------- github wrappers --------------------
-get_github_resp() {
-	__GITHUB_URL__="${1%/}"
-	__GITHUB_RESP__=$(run_python_backend "github_pkg" "$__GITHUB_URL__") || return 1
-}
-
-get_github_pkg_name() { 
-	local pkg=$(grep -oP '^PKG:\K.*' <<<"${__GITHUB_RESP__:-}" | head -1)
-	echo "${pkg:-UNKNOWN}"
-}
-
-get_github_vers() { 
-	run_python_backend "github_vers" "${__GITHUB_URL__:-}"
-}
-
+# -------------------- GitHub Releases (Python + curl_cffi) --------------------
+get_github_resp() { __GITHUB_JSON__=$(python3 source_bridge.py github metadata "$1") || return 1; }
+get_github_pkg_name() { jq -r '.pkg_name // empty' <<<"${__GITHUB_JSON__:-}"; }
+get_github_vers() { jq -r '.versions[]?' <<<"${__GITHUB_JSON__:-}"; }
 dl_github() {
-	local url="${1%/}" version=$2 output=$3 arch=$4 dpi=$5 vcode=${6:-}
-	rm -f "${output}" "${output}.apkm" "${output}.is_bundle" "${output}.apkm.is_bundle"
-
-	if ! run_python_backend "github_dl" "$url" "$version" "$output" "$arch" "$dpi" "$vcode" >/dev/null; then
+	local url=$1 version=$2 output=$3 arch=$4 dpi=$5 vcode=${6:-}
+	rm -f "$output" "${output}.apkm"
+	if ! python3 source_bridge.py github download "$url" "$version" "$output" "$arch" "$dpi" "$vcode"; then
+		epr "GitHub release download failed for version '$version', arch '$arch'"
 		return 1
 	fi
-	[[ -f "$output" || -f "${output}.apkm" ]]
+	if [[ -f "${output}.apkm" ]]; then
+		merge_splits "${output}.apkm" "$output" || return 1
+	elif [[ ! -s "$output" ]]; then
+		epr "GitHub release returned without an APK"
+		return 1
+	fi
+	return 0
 }
-
 # -------------------- APKMirror (Python + curl_cffi scraper) --------------------
 get_apkmirror_resp() {
 	__APKMIRROR_URL__="${1%/}"
