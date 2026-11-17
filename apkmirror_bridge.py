@@ -29,6 +29,8 @@ def main() -> int:
                 return 0
 
             if action == "download":
+                # Restore metadata state in this fresh process before resolving the version.
+                scraper.fetch_metadata(url)
                 if len(sys.argv) not in (7, 8):
                     print("download requires URL VERSION OUTPUT ARCH DPI [VERSION_CODE]", file=sys.stderr)
                     return 2
