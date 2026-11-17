@@ -666,13 +666,29 @@ patch_apk() {
 }
 
 check_sig() {
-	local file=$1 pkg_name=$2
-	local sig
-	if grep -q "$pkg_name" sig.txt; then
-		sig=$(java -jar "$APKSIGNER" verify --print-certs "$file" | grep ^Signer | grep SHA-256 | tail -1 | awk '{print $NF}')
-		echo "$pkg_name signature: ${sig}"
-		grep -qFx "$sig $pkg_name" sig.txt
+	local file=$1 pkg_name=$2 certs sig matched=false
+	local expected
+	expected=$(awk -v p="$pkg_name" '$2 == p {print tolower($1)}' sig.txt)
+	if [[ -z "$expected" ]]; then
+		epr "No trusted stock signing certificate is configured for $pkg_name"
+		return 1
 	fi
+
+	if ! certs=$(java -jar "$APKSIGNER" verify --print-certs "$file" 2>&1); then
+		epr "APK signature verification failed for $file: $certs"
+		return 1
+	fi
+	while IFS= read -r sig; do
+		[[ -n "$sig" ]] || continue
+		echo "$pkg_name certificate SHA-256: $sig"
+		if grep -qxF "$sig" <<<"$expected"; then matched=true; fi
+	done < <(grep -i 'certificate SHA-256 digest' <<<"$certs" | awk '{print tolower($NF)}' | sort -u)
+
+	if [[ "$matched" != true ]]; then
+		epr "Stock APK signature mismatch for $pkg_name ($file)"
+		return 1
+	fi
+	return 0
 }
 
 # ----------------- Pure Python Independent Engine -----------------
@@ -1449,6 +1465,17 @@ get_apkmirror_vers() { jq -r '.versions[]?' <<<"${__APKMIRROR_JSON__:-}"; }
 dl_apkmirror() {
 	local url="${1%/}" version=$2 output=$3 arch=$4 dpi=$5 vcode=${6:-}
 	rm -f "$output" "${output}.apkm" "${output}.is_bundle" "${output}.apkm.is_bundle"
+
+	# X/Twitter is distributed as a split bundle. Select APKMirror's BUNDLE
+	# variant explicitly; downloading its single-APK row loses required splits.
+	if [[ "$pkg_name" == "com.twitter.android" ]]; then
+		if ! python3 src/scrapers/apkmirror_vantage.py "$pkg_name" "$version" "$arch" "${output}.apkm"; then
+			epr "APKMirror BUNDLE download failed for $pkg_name $version ($arch)"
+			return 1
+		fi
+		return 0
+	fi
+
 	if ! python3 apkmirror_bridge.py download "$url" "$version" "$output" "$arch" "$dpi" "$vcode"; then
 		epr "APKMirror scraper failed for version '$version', arch '$arch', dpi '$dpi'"
 		return 1
@@ -1462,14 +1489,71 @@ get_apkpure_pkg_name() { printf '%s\n' "${pkg_name:-UNKNOWN}"; }
 get_apkpure_vers() { return 1; }
 dl_apkpure() {
 	local _url=$1 version=$2 output=$3 arch=$4 _dpi=$5
-	rm -f "$output" "${output}.apkm"
-	pr "Trying APKPure fallback for $pkg_name $version ($arch)"
-	python3 src/scrapers/apkpure_download.py "$pkg_name" "$version" "$arch" "$output" || {
-		epr "APKPure download failed for $pkg_name $version ($arch)"
-		rm -f "$output"
+	local apkeep_dir="${TEMP_DIR}/tools" apkeep="$TEMP_DIR/tools/apkeep-1.1.0"
+	local apkeep_url="https://github.com/EFForg/apkeep/releases/download/1.1.0/apkeep-x86_64-unknown-linux-gnu"
+	local apkeep_sha="badd7ad9fa7d2f32abe01eaf33b7ff086361a95bbc000a33bf44b630d4bf2140"
+	local tmp xapk aapt
+
+	# APKPure's Instagram endpoint is Cloudflare-challenged. Vantage uses
+	# apkeep's apk-pure API and then verifies every split against Meta's cert.
+	if [[ "$pkg_name" != "com.instagram.android" ]]; then
+		epr "APKPure/apkeep is intentionally enabled only for Instagram"
 		return 1
-	}
-	[[ -s "$output" || -s "${output}.apkm" ]]
+	fi
+
+	rm -f "$output" "${output}.apkm"
+	mkdir -p "$apkeep_dir"
+	if [[ ! -x "$apkeep" ]]; then
+		pr "Downloading pinned apkeep 1.1.0"
+		if ! curl -fsSL --retry 3 "$apkeep_url" -o "$apkeep.part"; then
+			epr "Could not download apkeep"
+			rm -f "$apkeep.part"
+			return 1
+		fi
+		local got_sha
+		got_sha=$(sha256sum "$apkeep.part" | awk '{print $1}')
+		if [[ "$got_sha" != "$apkeep_sha" ]]; then
+			epr "apkeep SHA-256 mismatch; refusing unverified binary"
+			rm -f "$apkeep.part"
+			return 1
+		fi
+		chmod +x "$apkeep.part"
+		mv "$apkeep.part" "$apkeep"
+	fi
+
+	aapt=""
+	if [[ -n "${ANDROID_HOME:-}" && -d "$ANDROID_HOME/build-tools" ]]; then
+		aapt=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt 2>/dev/null | sort -V | tail -1)
+	fi
+	if [[ -z "$aapt" && -n "${ANDROID_SDK_ROOT:-}" && -d "$ANDROID_SDK_ROOT/build-tools" ]]; then
+		aapt=$(find "$ANDROID_SDK_ROOT/build-tools" -maxdepth 2 -type f -name aapt 2>/dev/null | sort -V | tail -1)
+	fi
+	if [[ -z "$aapt" || ! -x "$aapt" ]]; then
+		epr "Android SDK aapt not found; cannot validate APKPure package/version/ABI"
+		return 1
+	fi
+
+	tmp=$(mktemp -d)
+	pr "Trying APKPure apkeep for $pkg_name $version ($arch)"
+	if ! "$apkeep" -a "$pkg_name@$version" -d apk-pure -o acknowledge_dangers=true "$tmp"; then
+		epr "apkeep could not download $pkg_name@$version"
+		rm -rf "$tmp"
+		return 1
+	fi
+	xapk=$(find "$tmp" -type f -name '*.xapk' -print -quit)
+	if [[ -z "$xapk" ]]; then
+		epr "apkeep returned no XAPK for $pkg_name@$version"
+		rm -rf "$tmp"
+		return 1
+	fi
+
+	if ! python3 src/scrapers/apkpure_apkeep.py "$pkg_name" "$version" "$arch" "$xapk" "${output}.apkm" "$aapt"; then
+		epr "APKPure XAPK validation/normalization failed"
+		rm -rf "$tmp" "${output}.apkm"
+		return 1
+	fi
+	rm -rf "$tmp"
+	[[ -s "${output}.apkm" ]]
 }
 # -------------------- uptodown wrappers --------------------
 get_uptodown_resp() { 
@@ -1549,8 +1633,9 @@ cache_download() {
         continue
       fi
       rm -f "$base_apk"
+      # Morphe CLI accepts APKM directly. Keep the split container intact;
+      # the caller verifies every nested APK signature before patching.
       cp -f "$dir/$asset" "${output}.apkm"
-      merge_splits "${output}.apkm" "$output" || { rm -f "${output}.apkm" "$output"; continue; }
     else
       cp -f "$dir/$asset" "$output"
       if ! check_sig "$output" "$pkg" >/dev/null 2>&1; then
