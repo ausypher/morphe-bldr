@@ -1535,81 +1535,77 @@ dl_apkpure() {
 	local apkeep_dir="${TEMP_DIR}/tools" apkeep="$TEMP_DIR/tools/apkeep-1.1.0"
 	local apkeep_url="https://github.com/EFForg/apkeep/releases/download/1.1.0/apkeep-x86_64-unknown-linux-gnu"
 	local apkeep_sha="badd7ad9fa7d2f32abe01eaf33b7ff086361a95bbc000a33bf44b630d4bf2140"
-	local tmp xapk aapt base abis
+	local tmp xapk apk aapt base abis
 
-	# HushGram is built from the official com.instagram.android package.
-	# Follow Vantage's APKPure/apkeep flow: keep the original XAPK container;
-	# do not rebuild/rename its split APK entries. verify_stock_apkm() below
-	# verifies every split's signature and the base package/version before use.
-	if [[ "$pkg_name" != "com.instagram.android" ]]; then
-		epr "APKPure/apkeep is enabled only for HushGram (com.instagram.android)"
-		return 1
-	fi
+	case "$pkg_name" in
+		com.instagram.android|com.twitter.android) ;;
+		*) epr "APKPure/apkeep is not enabled for $pkg_name"; return 1 ;;
+	esac
 
 	rm -f "$output" "${output}.apkm"
 	mkdir -p "$apkeep_dir"
 	if [[ ! -x "$apkeep" ]]; then
 		pr "Downloading pinned apkeep 1.1.0"
 		if ! curl -fsSL --retry 3 "$apkeep_url" -o "$apkeep.part"; then
-			epr "Could not download apkeep"
-			rm -f "$apkeep.part"
-			return 1
+			epr "Could not download apkeep"; rm -f "$apkeep.part"; return 1
 		fi
 		local got_sha
 		got_sha=$(sha256sum "$apkeep.part" | awk '{print $1}')
 		if [[ "$got_sha" != "$apkeep_sha" ]]; then
 			epr "apkeep SHA-256 mismatch; refusing unverified binary"
-			rm -f "$apkeep.part"
-			return 1
+			rm -f "$apkeep.part"; return 1
 		fi
-		chmod +x "$apkeep.part"
-		mv "$apkeep.part" "$apkeep"
-	fi
-
-	aapt=""
-	if [[ -n "${ANDROID_HOME:-}" && -d "$ANDROID_HOME/build-tools" ]]; then
-		aapt=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt 2>/dev/null | sort -V | tail -1)
-	fi
-	if [[ -z "$aapt" && -n "${ANDROID_SDK_ROOT:-}" && -d "$ANDROID_SDK_ROOT/build-tools" ]]; then
-		aapt=$(find "$ANDROID_SDK_ROOT/build-tools" -maxdepth 2 -type f -name aapt 2>/dev/null | sort -V | tail -1)
-	fi
-	if [[ -z "$aapt" || ! -x "$aapt" ]]; then
-		epr "Android SDK aapt not found; cannot validate APKPure ABI"
-		return 1
+		chmod +x "$apkeep.part"; mv "$apkeep.part" "$apkeep"
 	fi
 
 	tmp=$(mktemp -d)
-	pr "Trying APKPure apkeep for HushGram stock package $version ($arch)"
+	pr "Trying APKPure apkeep for $pkg_name $version"
 	if ! "$apkeep" -a "$pkg_name@$version" -d apk-pure -o acknowledge_dangers=true "$tmp"; then
-		epr "apkeep could not download $pkg_name@$version"
-		rm -rf "$tmp"
-		return 1
+		epr "apkeep could not download $pkg_name@$version"; rm -rf "$tmp"; return 1
 	fi
+
+	# APKPure may provide a single universal APK or an XAPK containing splits.
+	apk=$(find "$tmp" -type f -name '*.apk' -print -quit)
 	xapk=$(find "$tmp" -type f -name '*.xapk' -print -quit)
-	if [[ -z "$xapk" ]]; then
-		epr "apkeep returned no XAPK for $pkg_name@$version"
+	if [[ -n "$xapk" ]]; then
+		if [[ "$pkg_name" == "com.instagram.android" ]]; then
+			aapt=""
+			if [[ -n "${ANDROID_HOME:-}" && -d "$ANDROID_HOME/build-tools" ]]; then
+				aapt=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt 2>/dev/null | sort -V | tail -1)
+			fi
+			if [[ -z "$aapt" && -n "${ANDROID_SDK_ROOT:-}" && -d "$ANDROID_SDK_ROOT/build-tools" ]]; then
+				aapt=$(find "$ANDROID_SDK_ROOT/build-tools" -maxdepth 2 -type f -name aapt 2>/dev/null | sort -V | tail -1)
+			fi
+			if [[ -z "$aapt" || ! -x "$aapt" ]]; then
+				epr "Android SDK aapt not found; cannot validate HushGram ABI"
+				rm -rf "$tmp"; return 1
+			fi
+			base="$tmp/base-check.apk"
+			if ! unzip -p "$xapk" "$pkg_name.apk" > "$base" 2>/dev/null || [[ ! -s "$base" ]]; then
+				epr "APKPure XAPK has no $pkg_name.apk base entry"; rm -rf "$tmp"; return 1
+			fi
+			abis=$("$aapt" dump badging "$base" 2>/dev/null | grep -E '^native-code:' || true)
+			if ! grep -qF "'$arch'" <<<"$abis"; then
+				epr "APKPure base does not match ABI $arch (${abis:-no native-code line})"
+				rm -rf "$tmp"; return 1
+			fi
+		fi
+		cp "$xapk" "${output}.apkm"
 		rm -rf "$tmp"
-		return 1
+		[[ -s "${output}.apkm" ]]
+		return $?
 	fi
 
-	# Vantage identifies the base by its exact XAPK entry name ($PKG.apk),
-	# rather than guessing that base.apk is the application base.
-	base="$tmp/base-check.apk"
-	if ! unzip -p "$xapk" "$pkg_name.apk" > "$base" 2>/dev/null || [[ ! -s "$base" ]]; then
-		epr "APKPure XAPK has no $pkg_name.apk base entry"
+	if [[ -n "$apk" ]]; then
+		cp "$apk" "$output"
 		rm -rf "$tmp"
-		return 1
-	fi
-	abis=$("$aapt" dump badging "$base" 2>/dev/null | grep -E '^native-code:' || true)
-	if ! grep -qF "'$arch'" <<<"$abis"; then
-		epr "APKPure base does not match ABI $arch (${abis:-no native-code line})"
-		rm -rf "$tmp"
-		return 1
+		[[ -s "$output" ]]
+		return $?
 	fi
 
-	cp "$xapk" "${output}.apkm"
+	epr "apkeep returned neither an APK nor an XAPK for $pkg_name@$version"
 	rm -rf "$tmp"
-	[[ -s "${output}.apkm" ]]
+	return 1
 }
 # -------------------- uptodown wrappers --------------------
 get_uptodown_resp() { 
@@ -1673,7 +1669,8 @@ cache_download() {
   fi
   local -a cache_extensions=(apk apkm)
   case "$pkg" in
-    com.twitter.android|com.instagram.android) cache_extensions=(apkm) ;;
+    com.twitter.android) cache_extensions=(apk apkm) ;;
+    com.instagram.android) cache_extensions=(apkm) ;;
   esac
   for ext in "${cache_extensions[@]}"; do
     asset="${stem}.${ext}"; checksum="${asset}.sha256"
@@ -1978,8 +1975,6 @@ build_rv() {
 		fi
 	fi
 
-	# Cache only the original APK after package-signature validation.
-	cache_upload "$pkg_name" "$version_f" "$arch_f" "$stock_apk"
 
 	# === Extract actual versionName from the fresh stock APK via AAPT2 ===
 	local aapt_bin=""
@@ -2053,10 +2048,46 @@ build_rv() {
 
 		if [[ "${NORB:-}" != true || ( ! -f "$patched_apk" && ! -f "$apk_output" ) ]]; then
 			if ! patch_apk "$patch_input" "$patched_apk" "${patcher_args[*]}" "${args[cli]}" "${args[ptjar]}"; then
-				epr "Building '${table}' failed!"
-				return 1
+				if [[ "$pkg_name" == "com.twitter.android" ]]; then
+					local fallback_source fallback_file fallback_ok=false
+					for fallback_source in apkpure uptodown; do
+						rm -f "$patched_apk" "$stock_apk" "${stock_apk}.apkm"
+						pr "Twitter patch failed with previous stock APK; trying alternate source: $fallback_source"
+						case "$fallback_source" in
+							apkpure)
+								if ! dl_apkpure "" "$version_f" "$stock_apk" "$arch_f" "${args[dpi]:-}" "${__TARGET_VERSION_CODE__:-}"; then continue; fi
+								;;
+							uptodown)
+								if [[ -z "${args[uptodown_dlurl]:-}" ]] || ! get_uptodown_resp "${args[uptodown_dlurl]}" || ! dl_uptodown "${args[uptodown_dlurl]}" "$version_f" "$stock_apk" "$arch_f" "${args[dpi]:-}" "${__TARGET_VERSION_CODE__:-}"; then continue; fi
+								;;
+						esac
+						fallback_file=""
+						if [[ -s "${stock_apk}.apkm" ]]; then fallback_file="${stock_apk}.apkm"; elif [[ -s "$stock_apk" ]]; then fallback_file="$stock_apk"; fi
+						[[ -n "$fallback_file" ]] || continue
+						if [[ "${fallback_file##*.}" == "apkm" ]]; then
+							if ! verify_stock_apkm "$fallback_file" "$pkg_name" "$version_f" "$arch_f"; then continue; fi
+						else
+							if ! check_sig "$fallback_file" "$pkg_name"; then continue; fi
+						fi
+						pr "Trying Twitter patch against alternate stock APK from $fallback_source"
+						if patch_apk "$fallback_file" "$patched_apk" "${patcher_args[*]}" "${args[cli]}" "${args[ptjar]}"; then
+							stock_file="$fallback_file"
+							fallback_ok=true
+							break
+						fi
+					done
+					if [[ "$fallback_ok" != true ]]; then
+						epr "Twitter patching failed with APKMirror, APKPure and Uptodown candidates"
+						return 1
+					fi
+				else
+					epr "Building '${table}' failed!"
+					return 1
+				fi
 			fi
 		fi
+		# Cache only after Morphe has successfully patched the selected original.
+		cache_upload "$pkg_name" "$version_f" "$arch_f" "$stock_apk"
 
 		if [[ "$build_mode" == apk ]]; then
 			if [[ "${NORB:-}" != true || ( ! -f "$patched_apk" && ! -f "$apk_output" ) ]]; then
