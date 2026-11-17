@@ -42,13 +42,14 @@ def main() -> int:
             if action == "download":
                 if len(sys.argv) not in (8, 9):
                     print(
-                        "download requires URL VERSION OUTPUT ARCH DPI",
+                        "download requires URL VERSION OUTPUT ARCH DPI [VERSION_CODE]",
                         file=sys.stderr,
                     )
                     return 2
-                _, _, _, _, version, output, arch, dpi = sys.argv
+                _, _, _, _, version, output, arch, dpi, *rest = sys.argv
+                version_code = rest[0] if rest and rest[0] else None
                 result = scraper.download(
-                    url, version, Path(output), arch, dpi
+                    url, version, Path(output), arch, dpi, version_code
                 )
                 print(json.dumps({
                     "path": str(result.path),
