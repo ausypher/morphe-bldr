@@ -1671,7 +1671,11 @@ cache_download() {
   else
     return 1
   fi
-  for ext in apk apkm; do
+  local -a cache_extensions=(apk apkm)
+  case "$pkg" in
+    com.twitter.android|com.instagram.android) cache_extensions=(apkm) ;;
+  esac
+  for ext in "${cache_extensions[@]}"; do
     asset="${stem}.${ext}"; checksum="${asset}.sha256"
     rm -f "$dir/$asset" "$dir/$checksum"
     if ! gh release download stock-cache --pattern "$asset" --pattern "$checksum" --dir "$dir" >/dev/null 2>&1; then continue; fi
