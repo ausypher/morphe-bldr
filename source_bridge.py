@@ -40,7 +40,7 @@ def main() -> int:
                 return 0
 
             if action == "download":
-                if len(sys.argv) != 8:
+                if len(sys.argv) not in (8, 9):
                     print(
                         "download requires URL VERSION OUTPUT ARCH DPI",
                         file=sys.stderr,
