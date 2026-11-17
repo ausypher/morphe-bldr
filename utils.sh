@@ -1503,15 +1503,27 @@ dl_apkmirror() {
 	local url="${1%/}" version=$2 output=$3 arch=$4 dpi=$5 vcode=${6:-}
 	rm -f "$output" "${output}.apkm" "${output}.is_bundle" "${output}.apkm.is_bundle"
 
-	# Use the repository's existing APKMirror scraper for X as well.
-	# Unlike the standalone curl_cffi resolver, this path reuses the Cloudflare
-	# cookie solver started by the build workflow and selects the BUNDLE row
-	# through APKMirrorScraper. Morphe receives the original APKM unchanged.
-	if ! python3 apkmirror_bridge.py download "$url" "$version" "$output" "$arch" "$dpi" "$vcode"; then
+	# Reuse APKMirrorScraper: it uses the workflow's Cloudflare solver,
+	# resolves the selected release/version and chooses APK vs BUNDLE itself.
+	# Capture its returned path explicitly; bundles are written with .apkm.
+	local result_json result_path is_bundle
+	if ! result_json=$(python3 apkmirror_bridge.py download "$url" "$version" "$output" "$arch" "$dpi" "$vcode"); then
 		epr "APKMirror scraper failed for version '$version', arch '$arch', dpi '$dpi'"
 		return 1
 	fi
-	[[ -s "$output" || -s "${output}.apkm" ]]
+	result_path=$(jq -r '.path // empty' <<<"$result_json")
+	is_bundle=$(jq -r '.is_bundle // false' <<<"$result_json")
+	if [[ -z "$result_path" || ! -s "$result_path" ]]; then
+		epr "APKMirror scraper reported a missing/empty output: ${result_path:-<none>}"
+		return 1
+	fi
+	if [[ "$is_bundle" == true ]]; then
+		[[ "$result_path" == "${output}.apkm" ]] || cp -f "$result_path" "${output}.apkm"
+		[[ -s "${output}.apkm" ]]
+	else
+		[[ "$result_path" == "$output" ]] || cp -f "$result_path" "$output"
+		[[ -s "$output" ]]
+	fi
 }
 
 # -------------------- APKPure download-only fallback --------------------
