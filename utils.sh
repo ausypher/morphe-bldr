@@ -1784,7 +1784,10 @@ build_rv() {
 		for dl_p in "${DL_SRCS[@]}"; do
 			if [[ "$dl_p" == "apkpure" ]]; then
 				pr "Downloading '${table}' from 'apkpure'"
-				if dl_apkpure "" "$version_f" "$stock_apk" "$arch" "${args[dpi]:-}" "${__TARGET_VERSION_CODE__:-}" && [[ -s "$stock_apk" ]]; then stock_file="$stock_apk"; break; fi
+				if dl_apkpure "" "$version_f" "$stock_apk" "$arch" "${args[dpi]:-}" "${__TARGET_VERSION_CODE__:-}"; then
+					if [[ -s "${stock_apk}.apkm" ]]; then stock_file="${stock_apk}.apkm"; elif [[ -s "$stock_apk" ]]; then stock_file="$stock_apk"; fi
+					[[ -n "$stock_file" ]] && break
+				fi
 				continue
 			fi
 			if [[ -z "${args[${dl_p}_dlurl]:-}" ]]; then continue; fi
