@@ -71,25 +71,19 @@ def main() -> int:
             raise RuntimeError("downloaded file is empty")
 
         with zipfile.ZipFile(temp_download) as archive:
-            apk_names = [
-                name for name in archive.namelist()
-                if name.lower().endswith(".apk")
-                and not name.startswith("__MACOSX/")
-            ]
-            if not apk_names:
-                raise RuntimeError("download archive contains no APK files")
-
-            # A normal APK is already a ZIP with AndroidManifest.xml at root.
-            is_single_apk = (
-                len(apk_names) == 1
-                and Path(apk_names[0]).name.lower() == "base.apk"
-                and "manifest.json" not in archive.namelist()
-            )
-            if is_single_apk:
-                destination.write_bytes(archive.read(apk_names[0]))
-                if destination.read_bytes()[:2] != b"PK":
-                    raise RuntimeError("extracted base APK is invalid")
+            names = archive.namelist()
+            # A standalone APK is itself a ZIP with AndroidManifest.xml at root.
+            if "AndroidManifest.xml" in names:
+                destination.write_bytes(temp_download.read_bytes())
             else:
+                apk_names = [
+                    name for name in names
+                    if name.lower().endswith(".apk")
+                    and not name.startswith("__MACOSX/")
+                ]
+                if not apk_names:
+                    raise RuntimeError("download archive contains no APK files")
+
                 bundle_path = destination.with_suffix(".apkm")
                 with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
                     for name in apk_names:
