@@ -1696,6 +1696,24 @@ cache_download() {
         rm -f "$output"
         continue
       fi
+      if [[ "$pkg" == "com.twitter.android" ]]; then
+        local cache_aapt="" cache_badging=""
+        if command -v aapt >/dev/null 2>&1; then cache_aapt=$(command -v aapt)
+        elif [[ -n "${ANDROID_HOME:-}" ]]; then cache_aapt=$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name aapt 2>/dev/null | sort -V | tail -1)
+        elif [[ -n "${ANDROID_SDK_ROOT:-}" ]]; then cache_aapt=$(find "$ANDROID_SDK_ROOT/build-tools" -maxdepth 2 -type f -name aapt 2>/dev/null | sort -V | tail -1)
+        fi
+        if [[ -z "$cache_aapt" || ! -x "$cache_aapt" ]]; then
+          epr "Cannot verify cached Twitter APK identity"
+          rm -f "$output"
+          continue
+        fi
+        cache_badging=$("$cache_aapt" dump badging "$output" 2>/dev/null || true)
+        if ! grep -qF "name='$pkg'" <<<"$cache_badging" || ! grep -qF "versionName='$version'" <<<"$cache_badging"; then
+          epr "Cached Twitter APK package/version mismatch: $asset"
+          rm -f "$output"
+          continue
+        fi
+      fi
     fi
     pr "Using cached stock APK: $pkg $version ($arch)"
     return 0
