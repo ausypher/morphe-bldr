@@ -1994,32 +1994,30 @@ build_rv() {
 	fi
 
 
-	# === Extract actual versionName from the fresh stock APK via AAPT2 ===
-	local aapt_bin=""
-	if command -v aapt >/dev/null 2>&1; then aapt_bin="aapt"
-	elif command -v aapt2 >/dev/null 2>&1; then aapt_bin="aapt2"
-	elif [[ -n "${ANDROID_HOME:-}" ]]; then aapt_bin=$(find "$ANDROID_HOME/build-tools" -name "aapt" 2>/dev/null | sort -r | head -1)
-	elif [[ -f "${AAPT2:-}" ]]; then aapt_bin="$AAPT2"; fi
+	# === Extract actual versionName from a single stock APK via AAPT ===
+	# APKM bundles have already had their package/version identity verified by
+	# verify_stock_apkm(). Do not extract an arbitrary split (e.g. config.mdpi):
+	# split APKs can report an empty versionName, and the old sed expression
+	# then returned the entire "package: name=..." badging line as the version.
+	# Keep the selected release version for APKM inputs.
+	if [[ "${stock_file##*.}" != "apkm" ]]; then
+		local aapt_bin="" real_ver=""
+		if command -v aapt >/dev/null 2>&1; then aapt_bin=$(command -v aapt)
+		elif command -v aapt2 >/dev/null 2>&1; then aapt_bin=$(command -v aapt2)
+		elif [[ -n "${ANDROID_HOME:-}" ]]; then aapt_bin=$(find "$ANDROID_HOME/build-tools" -name "aapt" -type f 2>/dev/null | sort -V | tail -1)
+		elif [[ -n "${ANDROID_SDK_ROOT:-}" ]]; then aapt_bin=$(find "$ANDROID_SDK_ROOT/build-tools" -name "aapt" -type f 2>/dev/null | sort -V | tail -1)
+		elif [[ -n "${AAPT2:-}" && -x "${AAPT2}" ]]; then aapt_bin="$AAPT2"; fi
 
-	if [[ -n "$aapt_bin" && -x "$aapt_bin" ]]; then
-		local real_ver=""
-		local check_apk="$stock_file"
-		if [[ "${stock_file##*.}" == "apkm" ]]; then
-			rm -rf "${stock_apk}-aapt" || :
-			mkdir -p "${stock_apk}-aapt"
-			unzip -o -q -j "${stock_file}" "base.apk" -d "${stock_apk}-aapt" >/dev/null 2>&1 || unzip -o -q -j "${stock_file}" "*.apk" -d "${stock_apk}-aapt" >/dev/null 2>&1
-			check_apk=$(find "${stock_apk}-aapt" -name "*.apk" | head -1)
-		fi
-		if [[ -n "$check_apk" && -f "$check_apk" ]]; then
-			# ( ... || true) safely catches the SIGPIPE from grep -m1 closing the pipe early
-			real_ver=$( ("$aapt_bin" dump badging "$check_apk" 2>/dev/null || true) | grep -m1 "versionName=" | sed -E "s/.*versionName='([^']+)'.*/\1/" )
+		if [[ -n "$aapt_bin" && -x "$aapt_bin" ]]; then
+			# Only accept a non-empty versionName. If AAPT reports versionName='',
+			# leave version_f/version untouched rather than corrupting the output path.
+			real_ver=$( ("$aapt_bin" dump badging "$stock_file" 2>/dev/null || true) |
+				sed -nE "s/.*versionName='([^']+)'.*/\\1/p" | head -n 1 )
 			if [[ -n "$real_ver" ]]; then
 				version_f="$real_ver"
 				version="$real_ver"
 			fi
 		fi
-
-		rm -rf "${stock_apk}-aapt" 2>/dev/null || :
 	fi
 	# =====================================================================
 
