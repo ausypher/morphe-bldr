@@ -25,6 +25,10 @@ It brings multiple patch providers and download sources together in one configur
 
 > **Security note:** Build from source whenever possible. Only install APKs and modules from repositories and release sources you trust.
 
+## Engineering inspiration
+
+This project also draws on valuable ideas and practical engineering solutions from [**pmaxhogan/vantage**](https://github.com/pmaxhogan/vantage). Its approach to reliable APK acquisition and build automation is an important reference, particularly stock-APK caching, signing-certificate verification, multiple download sources with fallbacks, and resilient download tooling. These ideas are adapted where appropriate to this project's own architecture and requirements.
+
 ## Highlights
 
 | Capability | Description |
